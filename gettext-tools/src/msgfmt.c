@@ -1534,9 +1534,138 @@ msgfmt_operand_list_append (msgfmt_operand_list_ty *operands,
   operand->mlp = messages;
 }
 
+/* Helper function for bulk XML operation.
+ * The xml:lang tag is supposed to contain a locale string in BCP47
+ * format, but msgfmt operates on POSIX locale. So we need to convert
+ * one into the other when processing data in bulk, as the user can
+ * not manually define a locale in this mode. */
+static char*
+msgfmt_posix_locale_to_bcp47 (const char* locale)
+{
+  char* bcp47 = NULL;
+  size_t bcp47_len = 0;
+  size_t bcp47_size = 0;
+  bool has_variant = false;
+
+  if (locale == NULL)
+    return NULL;
+
+  bcp47_size = strlen (locale) + 1;
+  bcp47 = (char*) malloc (bcp47_size);
+  if (bcp47 == NULL)
+    return NULL;
+
+  for (int i = 0; locale[i] != '\0'; i++)
+    {
+      if (locale[i] == '_')
+        {
+          bcp47[bcp47_len++] = '-';
+        }
+      else if (locale[i] == '@')
+        {
+          has_variant = true;
+          break;
+        }
+      else
+        {
+          bcp47[bcp47_len++] = locale[i];
+        }
+    }
+
+  if (has_variant)
+    {
+      const char* variant = locale + bcp47_len + 1;
+      if (strncmp (variant, "cyrillic", 8) == 0)
+        {
+          if (bcp47_len + 5 >= bcp47_size)
+            {
+              bcp47_size += 6;
+              char* new_bcp47 = (char*) realloc (bcp47, bcp47_size);
+              if (new_bcp47 == NULL)
+                {
+                  free (bcp47);
+                  return NULL;
+                }
+              bcp47 = new_bcp47;
+            }
+          strcpy (bcp47 + bcp47_len, "-Cyrl");
+          bcp47_len += 5;
+        }
+      else if (strncmp (variant, "devanagari", 10) == 0)
+        {
+          if (bcp47_len + 5 >= bcp47_size)
+            {
+              bcp47_size += 6;
+              char* new_bcp47 = (char*) realloc (bcp47, bcp47_size);
+              if (new_bcp47 == NULL)
+                {
+                  free (bcp47);
+                  return NULL;
+                }
+              bcp47 = new_bcp47;
+            }
+            strcpy (bcp47 + bcp47_len, "-Deva");
+            bcp47_len += 5;
+        }
+      else if (strncmp (variant, "latin", 5) == 0)
+        {
+          if (bcp47_len + 5 >= bcp47_size)
+            {
+              bcp47_size += 6;
+              char* new_bcp47 = (char*) realloc (bcp47, bcp47_size);
+              if (new_bcp47 == NULL)
+                {
+                  free (bcp47);
+                  return NULL;
+                }
+              bcp47 = new_bcp47;
+            }
+            strcpy (bcp47 + bcp47_len, "-Latn");
+            bcp47_len += 5;
+        }
+      else if (strncmp (variant, "shaw", 4) == 0)
+        {
+          if (bcp47_len + 5 >= bcp47_size)
+            {
+              bcp47_size += 6;
+              char* new_bcp47 = (char*) realloc (bcp47, bcp47_size);
+              if (new_bcp47 == NULL)
+                {
+                  free (bcp47);
+                  return NULL;
+                }
+              bcp47 = new_bcp47;
+            }
+        strcpy (bcp47 + bcp47_len, "-Shaw");
+        bcp47_len += 5;
+        }
+      else if (strncmp (variant, "euro", 4) != 0)
+        {
+          size_t variant_len = strlen (variant);
+          if (bcp47_len + variant_len + 1 >= bcp47_size)
+            {
+              bcp47_size += variant_len + 1;
+              char* new_bcp47 = (char*) realloc (bcp47, bcp47_size);
+              if (new_bcp47 == NULL) {
+                  free (bcp47);
+                  return NULL;
+              }
+              bcp47 = new_bcp47;
+            }
+          bcp47[bcp47_len++] = '-';
+          strcpy (bcp47 + bcp47_len, variant);
+          bcp47_len += variant_len;
+        }
+    }
+
+    bcp47[bcp47_len] = '\0';
+    return bcp47;
+}
+
 static int
 msgfmt_operand_list_add_from_directory (msgfmt_operand_list_ty *operands,
-                                        const char *directory)
+                                        const char *directory,
+                                        bool xml_mode)
 {
   string_list_ty languages;
   void *saved_dir_list;
@@ -1605,7 +1734,18 @@ msgfmt_operand_list_add_from_directory (msgfmt_operand_list_ty *operands,
       /* Convert the messages to Unicode.  */
       iconv_message_list (mlp, NULL, po_charset_utf8, NULL);
 
-      msgfmt_operand_list_append (operands, language, mlp);
+      if (xml_mode)
+        {
+          char *bcp47_language = msgfmt_posix_locale_to_bcp47 (language);
+          if (!bcp47_language)
+            error (EXIT_FAILURE, 0, _("unable to convert POSIX locale '%s' to BCP47 format."), language);
+          msgfmt_operand_list_append (operands, bcp47_language, mlp);
+          free (bcp47_language);
+        }
+      else
+        {
+          msgfmt_operand_list_append (operands, language, mlp);
+        }
     }
 
   string_list_destroy (&languages);
@@ -1630,7 +1770,7 @@ msgfmt_desktop_bulk (const char *directory,
   msgfmt_operand_list_init (&operands);
 
   /* Read all .po files.  */
-  nerrors = msgfmt_operand_list_add_from_directory (&operands, directory);
+  nerrors = msgfmt_operand_list_add_from_directory (&operands, directory, false);
   if (nerrors > 0)
     status = 1;
   else
@@ -1661,7 +1801,7 @@ msgfmt_xml_bulk (const char *directory,
   msgfmt_operand_list_init (&operands);
 
   /* Read all .po files.  */
-  nerrors = msgfmt_operand_list_add_from_directory (&operands, directory);
+  nerrors = msgfmt_operand_list_add_from_directory (&operands, directory, true);
   if (nerrors > 0)
     {
       msgfmt_operand_list_destroy (&operands);
